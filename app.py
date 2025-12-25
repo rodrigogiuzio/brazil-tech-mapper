@@ -3,53 +3,44 @@ import pandas as pd
 import requests
 from io import StringIO
 
-st.set_page_config(page_title="Brazil Tech Mapper", layout="wide")
+st.set_page_config(page_title="Brazil Tech Mapper 100M", layout="wide")
 
-# --- CONEXÃO CVM ---
+# --- BUSCA DADOS DA BOLSA (CVM) ---
 @st.cache_data(ttl=86400)
-def get_cvm():
-    try:
-        url = "https://dados.cvm.gov.br/dados/CIA_ABERTA/CAD/DADOS/cad_cia_aberta.csv"
-        r = requests.get(url, timeout=20)
-        df = pd.read_csv(StringIO(r.content.decode("latin1")), sep=";", dtype=str)
-        df['cnpj_raiz'] = df['CNPJ_CIA'].str.replace(r'\D', '', regex=True).str[:8]
-        return df[['cnpj_raiz']].drop_duplicates()
-    except: return pd.DataFrame(columns=['cnpj_raiz'])
+def load_cvm():
+    url = "https://dados.cvm.gov.br/dados/CIA_ABERTA/CAD/DADOS/cad_cia_aberta.csv"
+    r = requests.get(url, timeout=20)
+    df = pd.read_csv(StringIO(r.content.decode("latin1")), sep=";", dtype=str)
+    df['cnpj_raiz'] = df['CNPJ_CIA'].str.replace(r'\D', '', regex=True).str[:8]
+    return df[['cnpj_raiz']].drop_duplicates()
 
-# --- LOGICA DE SUBSEGMENTOS ---
-def classificar(cnae):
-    c = str(cnae)
-    if c.startswith('6201'): return "Software/Dev"
-    if c.startswith('6202'): return "Consultoria TI"
-    if c.startswith('631'): return "Cloud/Dados"
-    return "Outros Tech"
+st.title("🗺️ Brazil Tech Mapper: Corporações R$ 100M+")
+cvm = load_cvm()
 
-st.title("🗺️ Brazil Tech Mapper Pro")
-cvm_raiz = get_cvm()
-
-# --- SIDEBAR ---
-st.sidebar.header("Configurações")
+# --- UPLOAD DO ARQUIVO ---
 uploaded_file = st.sidebar.file_uploader("Suba o CSV do BigQuery", type="csv")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    df['subsegmento'] = df['cnae_fiscal_principal'].apply(classificar)
-    df['Eh_Listada'] = df['cnpj'].astype(str).str[:8].isin(cvm_raiz['cnpj_raiz'])
+    df['cnpj_raiz'] = df['cnpj'].astype(str).str.zfill(14).str[:8]
+    df['Eh_Listada'] = df['cnpj_raiz'].isin(cvm['cnpj_raiz'])
     
     # Filtros
-    ufs = st.sidebar.multiselect("Estados", sorted(df['sigla_uf'].unique()), default=df['sigla_uf'].unique()[:5])
-    subs = st.sidebar.multiselect("Subsegmentos", df['subsegmento'].unique(), default=df['subsegmento'].unique())
+    st.sidebar.header("Filtros")
+    uf_sel = st.sidebar.multiselect("Estados", sorted(df['sigla_uf'].unique()), default=df['sigla_uf'].unique())
+    df_f = df[df['sigla_uf'].isin(uf_sel)]
     
-    df_f = df[(df['sigla_uf'].isin(ufs)) & (df['subsegmento'].isin(subs))]
-    
-    # Exibição
-    st.metric("Empresas Encontradas", len(df_f))
-    
-    # Se o CSV tiver latitude/longitude, mostra o mapa
-    if 'latitude' in df_f.columns:
-        st.map(df_f)
-    
-    st.dataframe(df_f[['cnpj', 'nome_fantasia', 'subsegmento', 'nome_municipio', 'sigla_uf', 'Eh_Listada']], use_container_width=True)
-else:
-    st.info("Aguardando o arquivo CSV do BigQuery para gerar o mapa e a lista.")
+    # KPIs
+    c1, c2 = st.columns(2)
+    c1.metric("Empresas (+100M)", len(df_f))
+    c2.metric("Na Bolsa (B3)", len(df_f[df_f['Eh_Listada'] == True]))
 
+    # Mapa - Streamlit precisa de colunas 'latitude' e 'longitude'
+    st.subheader("Mapa de Sedes Corporativas")
+    st.map(df_f[['latitude', 'longitude']])
+    
+    # Tabela
+    st.subheader("Lista de Empresas")
+    st.dataframe(df_f.sort_values('capital_social', ascending=False), use_container_width=True)
+else:
+    st.info("Aguardando upload do CSV do BigQuery.")
