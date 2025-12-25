@@ -3,37 +3,53 @@ import pandas as pd
 import requests
 from io import StringIO
 
-# 1. CONFIGURAÇÃO INICIAL (Sempre no topo) st.set_page_config(page_title="Brazil Tech Mapper", layout="wide")
+st.set_page_config(page_title="Brazil Tech Mapper", layout="wide")
 
-# 2. CRIAÇÃO DO DF (Garante que a variável 'df' sempre exista) # Criamos um dataframe vazio ou com um exemplo para o site não quebrar data_inicial = [{"CNPJ": "00.000.000/0001-00", "Razão Social": "Carregando...", "Status": "Ativo"}] df = pd.DataFrame(data_inicial)
-
-# 3. INTERFACE DO SITE
-st.title("🇧🇷 Brazil Tech Mapper")
-st.write("### Painel de Controle")
-
-# Agora o comando abaixo NUNCA vai dar NameError porque o 'df' foi definido na linha 12 st.dataframe(df, use_container_width=True)
-
-# 4. FUNÇÃO PARA CARREGAR DADOS DA CVM
-@st.cache_data(ttl=3600)
-def carregar_cvm():
+# --- CONEXÃO CVM ---
+@st.cache_data(ttl=86400)
+def get_cvm():
     try:
         url = "https://dados.cvm.gov.br/dados/CIA_ABERTA/CAD/DADOS/cad_cia_aberta.csv"
-        response = requests.get(url, timeout=10)
-        # Tenta ler os dados da CVM
-        cvm = pd.read_csv(StringIO(response.content.decode("latin1")), sep=";", dtype=str)
-        return cvm
-    except Exception as e:
-        return None
+        r = requests.get(url, timeout=20)
+        df = pd.read_csv(StringIO(r.content.decode("latin1")), sep=";", dtype=str)
+        df['cnpj_raiz'] = df['CNPJ_CIA'].str.replace(r'\D', '', regex=True).str[:8]
+        return df[['cnpj_raiz']].drop_duplicates()
+    except: return pd.DataFrame(columns=['cnpj_raiz'])
 
-# 5. TENTAR ATUALIZAR OS DADOS
-cvm_df = carregar_cvm()
+# --- LOGICA DE SUBSEGMENTOS ---
+def classificar(cnae):
+    c = str(cnae)
+    if c.startswith('6201'): return "Software/Dev"
+    if c.startswith('6202'): return "Consultoria TI"
+    if c.startswith('631'): return "Cloud/Dados"
+    return "Outros Tech"
 
-if cvm_df is not None:
-    st.success(f"Conectado à base da CVM! {len(cvm_df)} empresas encontradas.")
-    # Se quiser mostrar os dados da CVM na tela:
-    # st.dataframe(cvm_df.head(10))
+st.title("🗺️ Brazil Tech Mapper Pro")
+cvm_raiz = get_cvm()
+
+# --- SIDEBAR ---
+st.sidebar.header("Configurações")
+uploaded_file = st.sidebar.file_uploader("Suba o CSV do BigQuery", type="csv")
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+    df['subsegmento'] = df['cnae_fiscal_principal'].apply(classificar)
+    df['Eh_Listada'] = df['cnpj'].astype(str).str[:8].isin(cvm_raiz['cnpj_raiz'])
+    
+    # Filtros
+    ufs = st.sidebar.multiselect("Estados", sorted(df['sigla_uf'].unique()), default=df['sigla_uf'].unique()[:5])
+    subs = st.sidebar.multiselect("Subsegmentos", df['subsegmento'].unique(), default=df['subsegmento'].unique())
+    
+    df_f = df[(df['sigla_uf'].isin(ufs)) & (df['subsegmento'].isin(subs))]
+    
+    # Exibição
+    st.metric("Empresas Encontradas", len(df_f))
+    
+    # Se o CSV tiver latitude/longitude, mostra o mapa
+    if 'latitude' in df_f.columns:
+        st.map(df_f)
+    
+    st.dataframe(df_f[['cnpj', 'nome_fantasia', 'subsegmento', 'nome_municipio', 'sigla_uf', 'Eh_Listada']], use_container_width=True)
 else:
-    st.warning("Aguardando conexão com a base da CVM...")
+    st.info("Aguardando o arquivo CSV do BigQuery para gerar o mapa e a lista.")
 
-st.sidebar.header("Filtros e Upload")
-st.sidebar.file_uploader("Subir seu arquivo CSV", type=["csv"])
